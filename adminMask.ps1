@@ -13,6 +13,7 @@ Initialize-AdminMaskConfig -ProjectRoot $root
 $script:hostRows = @()
 $script:roles = @()
 $script:ignoreFilters = $false
+$script:selectedComputer = ''
 
 function Make-Button([Windows.Forms.Control]$parent,[string]$caption,[int]$x,[int]$y,[int]$w=125) {
     $b=New-Object Windows.Forms.Button
@@ -190,6 +191,7 @@ function Apply-HostFilters {
         (!$ou -or $ou -eq 'All' -or [string]$_.OU -eq $ou)
     })
     Set-Grid $hostsGrid $rows @('Host','Maska','Tier','OU')
+    $script:selectedComputer = ''
     $form.Text="AdminMask - OU GUI | Hosts: $($rows.Count) / $($script:hostRows.Count)"
 }
 function Refresh-HostFilters {
@@ -234,6 +236,7 @@ $hostReload.Add_Click({
 $hostsGrid.Add_CellClick({
     if ($hostsGrid.SelectedRows.Count -ne 1) { return }
     $hostName.Text=Grid-Value $hostsGrid 'Host'
+    $script:selectedComputer = $hostName.Text
     Select-Combo $editMask (Grid-Value $hostsGrid 'Maska') '0'
     Select-Combo $editTier (Grid-Value $hostsGrid 'Tier') '2'
     Select-Combo $editOu (Grid-Value $hostsGrid 'OU') 'All'
@@ -251,6 +254,7 @@ $hostSave.Add_Click({
         $rows+= [pscustomobject]@{Host=$name;Maska=[string]$mask;Tier=$tier;OU=$ou}
         Save-AdminMaskHosts -ProjectRoot $root -Items $rows
         Refresh-Hosts
+        $script:selectedComputer = $name
     } catch { Fail $_.Exception.Message }
 })
 $hostRemove.Add_Click({
@@ -320,7 +324,7 @@ $ouDiscover.Add_Click({
         $added=0
         foreach($h in $found){
             if (!$known.ContainsKey([string]$h.Host)){
-                $items+= [pscustomobject]@{Host=$h.Host;Maska='0';Tier='2';OU=$dn}
+                $items+= [pscustomobject]@{Host=$h.Host;Maska='';Tier='';OU=$dn}
                 $known[[string]$h.Host]=$true
                 $added++
             }
@@ -401,9 +405,33 @@ $calcCopy.Add_Click({
     catch{Fail $_.Exception.Message}
 })
 $calcUse.Add_Click({
-    $v=$calcTitle.Text.Replace('Mask: ','')
-    Select-Combo $editMask $v '0'
-    $tabs.SelectedTab=$hostsPage
+    try {
+        $value = $calcTitle.Text.Replace('Mask: ','')
+        Select-Combo $editMask $value '0'
+        if ([string]$editMask.SelectedItem -ne $value) {
+            throw "Calculated mask $value is missing from editor options."
+        }
+        $targetName = $script:selectedComputer
+        if ([string]::IsNullOrWhiteSpace($targetName)) {
+            $tabs.SelectedTab = $hostsPage
+            [Windows.Forms.MessageBox]::Show('Mask selected in host editor. Select a host and click Add / Update to save.','AdminMask') | Out-Null
+            return
+        }
+        $existing = @(Get-AdminMaskHosts -ProjectRoot $root | Where-Object { $_.Host -ieq $targetName })
+        if ($existing.Count -ne 1) { throw "Host not found or duplicated in CSV: $targetName" }
+        $previous = [string]$existing[0].Maska
+        if (-not (Confirm "Update CSV mask for $targetName from '$previous' to '$value'? No AD/GPO change will be made.")) {
+            $tabs.SelectedTab = $hostsPage
+            return
+        }
+        $allRows = @(Get-AdminMaskHosts -ProjectRoot $root)
+        foreach ($record in $allRows) {
+            if ($record.Host -ieq $targetName) { $record.Maska = $value }
+        }
+        Save-AdminMaskHosts -ProjectRoot $root -Items $allRows
+        Refresh-Hosts
+        $tabs.SelectedTab = $hostsPage
+    } catch { Fail $_.Exception.Message }
 })
 $calcAdd.Add_Click({
     try {
