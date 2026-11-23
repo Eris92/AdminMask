@@ -60,6 +60,25 @@ function Reset-Combo([Windows.Forms.ComboBox]$combo,[object[]]$items,[string]$fa
     foreach ($i in $items) { [void]$combo.Items.Add([string]$i) }
     Select-Combo $combo $old $fallback
 }
+function Set-PageLayout {
+    param([Windows.Forms.TabPage]$Page, [Windows.Forms.Control]$Header, [Windows.Forms.Control]$Body, [int]$HeaderHeight)
+    $Page.Controls.Remove($Header)
+    $Page.Controls.Remove($Body)
+    $layout = New-Object Windows.Forms.TableLayoutPanel
+    $layout.Dock = 'Fill'
+    $layout.ColumnCount = 1
+    $layout.RowCount = 2
+    $layout.Margin = New-Object Windows.Forms.Padding(0)
+    $layout.Padding = New-Object Windows.Forms.Padding(0)
+    $layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent,100))) | Out-Null
+    $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute,[single]$HeaderHeight))) | Out-Null
+    $layout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Percent,100))) | Out-Null
+    $Header.Dock = 'Fill'
+    $Body.Dock = 'Fill'
+    $layout.Controls.Add($Header,0,0)
+    $layout.Controls.Add($Body,0,1)
+    $Page.Controls.Add($layout)
+}
 function New-Grid([Windows.Forms.Control]$parent) {
     $g=New-Object Windows.Forms.DataGridView
     $g.Dock='Fill'
@@ -127,8 +146,7 @@ $hostHead.Dock='Top'
 $hostHead.Height=139
 $hostsPage.Controls.Add($hostHead)
 $hostsGrid=New-Grid $hostsPage
-$hostsGrid.BringToFront()
-$hostHead.BringToFront()
+Set-PageLayout -Page $hostsPage -Header $hostHead -Body $hostsGrid -HeaderHeight 139
 
 Make-Label $hostHead 'Host' 12 12 45 | Out-Null
 $hostName=Make-Text $hostHead 62 8 150
@@ -256,8 +274,7 @@ $ouHead.Dock='Top'
 $ouHead.Height=95
 $ouPage.Controls.Add($ouHead)
 $ouGrid=New-Grid $ouPage
-$ouGrid.BringToFront()
-$ouHead.BringToFront()
+Set-PageLayout -Page $ouPage -Header $ouHead -Body $ouGrid -HeaderHeight 95
 Make-Label $ouHead 'OU DN' 12 14 65 | Out-Null
 $ouInput=Make-Text $ouHead 80 10 905
 $ouAdd=Make-Button $ouHead 'Add / Update' 12 49 130
@@ -327,8 +344,7 @@ $calcPanel.FlowDirection='TopDown'
 $calcPanel.WrapContents=$false
 $calcPanel.AutoScroll=$true
 $calcPage.Controls.Add($calcPanel)
-$calcPanel.BringToFront()
-$calcHead.BringToFront()
+Set-PageLayout -Page $calcPage -Header $calcHead -Body $calcPanel -HeaderHeight 124
 $calcTitle=Make-Label $calcHead 'Mask: 0' 12 12 230
 $calcTitle.Font=New-Object Drawing.Font('Segoe UI',13,[Drawing.FontStyle]::Bold)
 $calcCopy=Make-Button $calcHead 'Copy mask' 235 8 120
@@ -337,8 +353,26 @@ Make-Label $calcHead 'New role' 12 69 75 | Out-Null
 $newRoleName=Make-Text $calcHead 86 65 180
 Make-Label $calcHead 'Bit' 275 69 32 | Out-Null
 $newRoleBit=Make-Text $calcHead 310 65 90
+$newRoleBit.ReadOnly=$true
+$newRoleBit.TabStop=$false
 $calcAdd=Make-Button $calcHead 'Add role' 410 64 115
 $calcReload=Make-Button $calcHead 'Reload roles' 531 64 125
+function Update-NextRoleBit {
+    $highest = 0
+    foreach ($role in $script:roles) {
+        $current = [int]$role.Value
+        if ($current -gt $highest) { $highest = $current }
+    }
+    $next = if ($highest -eq 0) { 1 } else { [long]$highest * 2 }
+    if ($next -gt [int]::MaxValue) {
+        $newRoleBit.Text = 'FULL'
+        $calcAdd.Enabled = $false
+    }
+    else {
+        $newRoleBit.Text = [string]$next
+        $calcAdd.Enabled = $true
+    }
+}
 function Calc-Value {
     $value=0
     foreach($control in $calcPanel.Controls){
@@ -360,6 +394,7 @@ function Refresh-Calculator {
         [void]$calcPanel.Controls.Add($c)
     }
     Calc-Value
+    Update-NextRoleBit
 }
 $calcCopy.Add_Click({
     try{[Windows.Forms.Clipboard]::SetText($calcTitle.Text.Replace('Mask: ',''))}
@@ -381,7 +416,7 @@ $calcAdd.Add_Click({
         Refresh-Calculator
         Refresh-Editor
         $newRoleName.Clear()
-        $newRoleBit.Clear()
+        Update-NextRoleBit
     }catch{Fail $_.Exception.Message}
 })
 $calcReload.Add_Click({
@@ -405,8 +440,7 @@ $outputBox.WordWrap=$false
 $outputBox.Dock='Fill'
 $outputBox.Font=New-Object Drawing.Font('Consolas',9)
 $opsPage.Controls.Add($outputBox)
-$outputBox.BringToFront()
-$opsHead.BringToFront()
+Set-PageLayout -Page $opsPage -Header $opsHead -Body $outputBox -HeaderHeight 100
 $opsInfo=Make-Label $opsHead 'Read-only checks. Linked GPOs are not proof of effective application; RSoP requires remote access and rights.' 12 10 1050
 $opsAll=Make-Button $opsHead 'Check AD' 12 44 128
 $opsLinks=Make-Button $opsHead 'Linked GPOs' 150 44 128
@@ -416,9 +450,9 @@ $opsOpen=Make-Button $opsHead 'Open config' 616 44 125
 $opsAll.Add_Click({Run-Check 'Inventory'})
 $opsLinks.Add_Click({Run-Check 'LinkedGpo'})
 $opsRsop.Add_Click({
-    $host=Grid-Value $hostsGrid 'Host'
-    if (!$host) {Fail 'Select a host in Hosts first.';return}
-    Run-Check 'Rsop' $host
+    $selectedComputer=Grid-Value $hostsGrid 'Host'
+    if (!$selectedComputer) {Fail 'Select a host in Hosts first.';return}
+    Run-Check 'Rsop' $selectedComputer
 })
 $opsPlan.Add_Click({
     try{
