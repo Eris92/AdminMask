@@ -4,11 +4,11 @@ function Get-AdminMaskSettings {
     param([Parameter(Mandatory)][string]$ProjectRoot)
     $path = Join-Path $ProjectRoot 'config/settings.json'
     if (-not (Test-Path -LiteralPath $path)) {
-        return [pscustomobject]@{MaskAttribute=''}
+        return [pscustomobject]@{MaskAttribute='investaAdminMask'}
     }
     $settings = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
     if (-not ($settings.PSObject.Properties.Name -contains 'MaskAttribute')) {
-        return [pscustomobject]@{MaskAttribute=''}
+        return [pscustomobject]@{MaskAttribute='investaAdminMask'}
     }
     return $settings
 }
