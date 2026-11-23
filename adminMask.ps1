@@ -9,6 +9,7 @@ Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 $root = $PSScriptRoot
 . (Join-Path $root 'scripts/AdminMask.Common.ps1')
+. (Join-Path $root 'scripts/AdminMask.Directory.ps1')
 Initialize-AdminMaskConfig -ProjectRoot $root
 $script:hostRows = @()
 $script:roles = @()
@@ -162,6 +163,8 @@ $hostSave=Make-Button $hostHead 'Add / Update' 12 44 130
 $hostRemove=Make-Button $hostHead 'Remove' 150 44 105
 $hostReload=Make-Button $hostHead 'Reload' 263 44 105
 $hostCheck=Make-Button $hostHead 'Check selected AD' 376 44 155
+$hostSync=Make-Button $hostHead 'Sync from AD' 540 44 140
+$hostSync.Add_Click({try{Sync-HostsFromAD}catch{Fail $_.Exception.Message}})
 
 Make-Label $hostHead 'FILTERS' 12 100 62 | Out-Null
 Make-Label $hostHead 'Host' 78 100 38 | Out-Null
@@ -177,6 +180,49 @@ $resetFilters=Make-Button $hostHead 'Clear' 984 96 98
 function Refresh-Hosts {
     $script:hostRows=@(Get-AdminMaskHosts -ProjectRoot $root)
     Refresh-HostFilters
+}
+function Sync-HostsFromAD {
+    $settings=Get-AdminMaskSettings -ProjectRoot $root
+    if ([string]::IsNullOrWhiteSpace([string]$settings.MaskAttribute)) {
+        throw 'Configure the actual AD computer mask attribute on the AD OUs tab first.'
+    }
+    $mappings=@(Get-AdminMaskOuMappings -ProjectRoot $root)
+    if ($mappings.Count -eq 0) {throw 'Configure at least one OU.'}
+    $rows=@(Get-AdminMaskHosts -ProjectRoot $root)
+    $index=@{}
+    foreach($record in $rows){$index[[string]$record.Host]=$record}
+    $newCount=0
+    $changed=0
+    foreach($mapping in $mappings){
+        $found=@(Get-AdminMaskDirectoryComputers -SearchBase ([string]$mapping.OU) -ProjectRoot $root -Recursive)
+        foreach($adRecord in $found){
+            $key=[string]$adRecord.Host
+            if($index.ContainsKey($key)){
+                $record=$index[$key]
+                if ([string]$adRecord.Maska -ne '' -and $record.Maska -ne $adRecord.Maska) {
+                    $record.Maska=[string]$adRecord.Maska
+                    $changed++
+                }
+                if ([string]$adRecord.Tier -ne '' -and $record.Tier -ne $adRecord.Tier) {
+                    $record.Tier=[string]$adRecord.Tier
+                    $changed++
+                }
+                if ($record.OU -ne $mapping.OU){$record.OU=[string]$mapping.OU;$changed++}
+            } else {
+                $index[$key]=[pscustomobject]@{
+                    Host=$key;Maska=[string]$adRecord.Maska;Tier=[string]$adRecord.Tier;OU=[string]$mapping.OU
+                }
+                $newCount++
+            }
+        }
+    }
+    if (($newCount+$changed) -gt 0) {
+        if (Confirm "AD read completed. New: $newCount; changes: $changed. Save changes to hosts.csv?") {
+            Save-AdminMaskHosts -ProjectRoot $root -Items @($index.Values)
+        }
+    }
+    Refresh-Hosts
+    [Windows.Forms.MessageBox]::Show("AD read completed. New: $newCount; changes: $changed.",'AdminMask')|Out-Null
 }
 function Apply-HostFilters {
     if ($script:ignoreFilters) { return }
@@ -198,7 +244,7 @@ function Refresh-HostFilters {
     $script:ignoreFilters=$true
     try {
         $maskValues=@('All') + @($script:hostRows | ForEach-Object { [string]$_.Maska } | Sort-Object -Unique)
-        $ouValues=@('All') + @(Get-AdminMaskOus -ProjectRoot $root) + @($script:hostRows | ForEach-Object { [string]$_.OU } | Where-Object { $_ } | Sort-Object -Unique)
+        $ouValues=@('All') + @(Get-AdminMaskOuMappings -ProjectRoot $root | ForEach-Object {$_.OU}) + @($script:hostRows | ForEach-Object { [string]$_.OU } | Where-Object { $_ } | Sort-Object -Unique)
         Reset-Combo $filterMask @($maskValues | Select-Object -Unique)
         Reset-Combo $filterTier @('All','0','1','2')
         Reset-Combo $filterOu @($ouValues | Select-Object -Unique)
@@ -211,7 +257,7 @@ function Refresh-Editor {
     $allMasks=@(Get-AdminMaskMaskOptions -Roles $script:roles)
     Reset-Combo $editMask $allMasks '0'
     if ($mask) { Select-Combo $editMask $mask '0' }
-    Reset-Combo $editOu (@('All') + @(Get-AdminMaskOus -ProjectRoot $root)) 'All'
+    Reset-Combo $editOu (@('All') + @(Get-AdminMaskOuMappings -ProjectRoot $root | ForEach-Object {$_.OU})) 'All'
     if ($ou) { Select-Combo $editOu $ou 'All' }
 }
 $filterHost.Add_TextChanged({Apply-HostFilters})
@@ -275,32 +321,50 @@ $hostCheck.Add_Click({
 # OU management
 $ouHead=New-Object Windows.Forms.Panel
 $ouHead.Dock='Top'
-$ouHead.Height=95
+$ouHead.Height=137
 $ouPage.Controls.Add($ouHead)
 $ouGrid=New-Grid $ouPage
-Set-PageLayout -Page $ouPage -Header $ouHead -Body $ouGrid -HeaderHeight 95
+Set-PageLayout -Page $ouPage -Header $ouHead -Body $ouGrid -HeaderHeight 137
 Make-Label $ouHead 'OU DN' 12 14 65 | Out-Null
 $ouInput=Make-Text $ouHead 80 10 905
-$ouAdd=Make-Button $ouHead 'Add / Update' 12 49 130
-$ouRemove=Make-Button $ouHead 'Remove' 150 49 110
-$ouDiscover=Make-Button $ouHead 'Discover recursive' 268 49 168
-$ouReload=Make-Button $ouHead 'Reload' 444 49 110
+Make-Label $ouHead 'Tier' 12 49 55 | Out-Null
+$ouTier=Make-Combo $ouHead 80 45 130
+Reset-Combo $ouTier @('Unassigned','0','1','2') 'Unassigned'
+Make-Label $ouHead 'Mask attribute' 230 49 105 | Out-Null
+$maskAttribute=Make-Text $ouHead 342 45 220
+$maskAttribute.Text=[string](Get-AdminMaskSettings -ProjectRoot $root).MaskAttribute
+$saveAttribute=Make-Button $ouHead 'Save attribute' 575 44 130
+$saveAttribute.Add_Click({
+    try { Set-AdminMaskAttribute -ProjectRoot $root -Attribute $maskAttribute.Text }
+    catch {Fail $_.Exception.Message}
+})
+$ouAdd=Make-Button $ouHead 'Add / Update' 12 93 130
+$ouRemove=Make-Button $ouHead 'Remove' 150 93 110
+$ouDiscover=Make-Button $ouHead 'Discover recursive' 268 93 168
+$ouReload=Make-Button $ouHead 'Reload' 444 93 110
 function Refresh-Ous {
-    $rows=@(Get-AdminMaskOus -ProjectRoot $root | ForEach-Object {[pscustomobject]@{OU=$_}})
-    Set-Grid $ouGrid $rows @('OU')
+    $rows=@(Get-AdminMaskOuMappings -ProjectRoot $root)
+    Set-Grid $ouGrid $rows @('OU','Tier')
     Refresh-Editor
     Refresh-HostFilters
 }
-$ouGrid.Add_CellClick({$ouInput.Text=Grid-Value $ouGrid 'OU'})
+$ouGrid.Add_CellClick({
+    $ouInput.Text=Grid-Value $ouGrid 'OU'
+    $tierValue=Grid-Value $ouGrid 'Tier'
+    if (!$tierValue) {$tierValue='Unassigned'}
+    Select-Combo $ouTier $tierValue 'Unassigned'
+})
 $ouReload.Add_Click({try{Refresh-Ous}catch{Fail $_.Exception.Message}})
 $ouAdd.Add_Click({
     try {
         $dn=$ouInput.Text.Trim()
         Test-AdminMaskDn $dn
         $old=Grid-Value $ouGrid 'OU'
-        $items=@(Get-AdminMaskOus -ProjectRoot $root | Where-Object {(!$old) -or ($_ -ine $old)})
-        $items+= $dn
-        Save-AdminMaskOus -ProjectRoot $root -Items $items
+        $tierValue=[string]$ouTier.SelectedItem
+        if ($tierValue -eq 'Unassigned') {$tierValue=''}
+        $items=@(Get-AdminMaskOuMappings -ProjectRoot $root | Where-Object {(!$old) -or ($_.OU -ine $old)})
+        $items+= [pscustomobject]@{OU=$dn;Tier=$tierValue}
+        Save-AdminMaskOuMappings -ProjectRoot $root -Items $items
         Refresh-Ous
     } catch {Fail $_.Exception.Message}
 })
@@ -308,8 +372,8 @@ $ouRemove.Add_Click({
     try {
         $dn=Grid-Value $ouGrid 'OU'
         if (!$dn -or !(Confirm "Remove OU from config? $dn")) {return}
-        $items=@(Get-AdminMaskOus -ProjectRoot $root | Where-Object {$_ -ine $dn})
-        Save-AdminMaskOus -ProjectRoot $root -Items $items
+        $items=@(Get-AdminMaskOuMappings -ProjectRoot $root | Where-Object {$_.OU -ine $dn})
+        Save-AdminMaskOuMappings -ProjectRoot $root -Items $items
         Refresh-Ous
     } catch {Fail $_.Exception.Message}
 })
@@ -317,14 +381,14 @@ $ouDiscover.Add_Click({
     try {
         $dn=$ouInput.Text.Trim()
         Test-AdminMaskDn $dn
-        $found=@(& (Join-Path $root 'scripts/AdminMask-Inventory.ps1') -SearchBase @($dn) -Recursive)
+        $found=@(Get-AdminMaskDirectoryComputers -SearchBase $dn -ProjectRoot $root -Recursive)
         $items=@(Get-AdminMaskHosts -ProjectRoot $root)
         $known=@{}
         foreach($h in $items){$known[[string]$h.Host]=$true}
         $added=0
         foreach($h in $found){
             if (!$known.ContainsKey([string]$h.Host)){
-                $items+= [pscustomobject]@{Host=$h.Host;Maska='';Tier='';OU=$dn}
+                $items+= [pscustomobject]@{Host=$h.Host;Maska=[string]$h.Maska;Tier=[string]$h.Tier;OU=$dn}
                 $known[[string]$h.Host]=$true
                 $added++
             }
