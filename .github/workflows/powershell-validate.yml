@@ -1,0 +1,52 @@
+name: PowerShell validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  parse-and-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse all PowerShell scripts (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(Get-ChildItem . -Recurse -Filter '*.ps1')
+          foreach ($file in $files) {
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $file.FullName, [ref]$tokens, [ref]$parseErrors
+            )
+            if ($parseErrors.Count -gt 0) {
+              $parseErrors | Format-List | Out-String | Write-Error
+              throw "Parse failed: $($file.FullName)"
+            }
+            Write-Output "OK: $($file.FullName)"
+          }
+      - name: Test directory Tier resolution and bit masks
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . .\scripts\AdminMask.Common.ps1
+          . .\scripts\AdminMask.Directory.ps1
+          $roles = @(
+            [pscustomobject]@{ Name='Default';Value=0 },
+            [pscustomobject]@{ Name='L1';Value=1 },
+            [pscustomobject]@{ Name='Dev';Value=2 },
+            [pscustomobject]@{ Name='BI';Value=4 }
+          )
+          if ((Test-AdminMaskValue -Value '6' -Roles $roles) -ne 6) { throw 'Mask validation failed' }
+          $masks = @(Get-AdminMaskMaskOptions -Roles $roles)
+          if ($masks.Count -ne 8 -or $masks -notcontains 7) { throw 'Mask combinations failed' }
+          $maps = @(
+            [pscustomobject]@{OU='OU=Servers,DC=example,DC=local';Tier='2'},
+            [pscustomobject]@{OU='OU=Tier0,OU=Servers,DC=example,DC=local';Tier='0'}
+          )
+          $tier = Resolve-AdminMaskTier -ComputerDn 'CN=DC01,OU=Tier0,OU=Servers,DC=example,DC=local' -Mappings $maps
+          if ($tier -ne '0') { throw 'Nested OU Tier resolution failed' }
+          $settings = Get-AdminMaskSettings -ProjectRoot (Get-Location).Path
+          if ($settings.MaskAttribute -ne 'investaAdminMask') { throw 'Default attribute failed' }
