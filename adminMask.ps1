@@ -17,6 +17,7 @@ $script:ignoreFilters = $false
 $script:selectedComputer = ''
 $script:checkedHosts = @{}
 $script:filterEmptyLabel = '[Empty]'
+$script:renderingHosts = $false
 
 function Make-Button([Windows.Forms.Control]$parent,[string]$caption,[int]$x,[int]$y,[int]$w=125) {
     $b=New-Object Windows.Forms.Button
@@ -86,7 +87,7 @@ function Set-PageLayout {
 function New-Grid([Windows.Forms.Control]$parent) {
     $g=New-Object Windows.Forms.DataGridView
     $g.Dock='Fill'
-    $g.ReadOnly=$true
+    $g.ReadOnly=$false
     $g.MultiSelect=$false
     $g.SelectionMode='FullRowSelect'
     $g.AllowUserToAddRows=$false
@@ -113,6 +114,7 @@ function Set-Grid([Windows.Forms.DataGridView]$grid,[object[]]$rows,[string[]]$c
         $dt.Rows.Add($r)
     }
     $grid.DataSource=$dt
+    foreach ($column in $grid.Columns) { $column.ReadOnly = $true }
     $grid.ClearSelection()
 }
 function Format-AdminMaskRoles {
@@ -265,7 +267,7 @@ function Sync-HostsFromAD {
     [Windows.Forms.MessageBox]::Show("AD read completed. New: $newCount; changes: $changed.",'AdminMask')|Out-Null
 }
 function Get-CheckedHostNames {
-    return @($script:checkedHosts.Keys | Where-Object { $script:checkedHosts[$_] })
+    return @($script:checkedHosts.Keys | Where-Object { $script:checkedHosts[$_] } | Sort-Object)
 }
 function Refresh-HostCheckCount {
     $hostSelectedLabel.Text = 'Selected: ' + @(Get-CheckedHostNames).Count
@@ -292,7 +294,10 @@ function Apply-HostFilters {
             OU = [string]$_.OU
         }
     })
-    Set-Grid $hostsGrid $display @('Selected','Host','Maska','Roles','Tier','OU')
+    $script:renderingHosts = $true
+    try {
+        Set-Grid $hostsGrid $display @('Selected','Host','Maska','Roles','Tier','OU')
+    } finally { $script:renderingHosts = $false }
     if ($hostsGrid.Columns['Selected'] -is [Windows.Forms.DataGridViewTextBoxColumn]) {
         $position = $hostsGrid.Columns['Selected'].Index
         $hostsGrid.Columns.RemoveAt($position)
@@ -355,7 +360,7 @@ $hostsGrid.Add_CurrentCellDirtyStateChanged({
 })
 $hostsGrid.Add_CellValueChanged({
     param($sender,$e)
-    if ($e.RowIndex -lt 0 -or $e.ColumnIndex -lt 0) { return }
+    if ($script:renderingHosts -or $e.RowIndex -lt 0 -or $e.ColumnIndex -lt 0) { return }
     if ($hostsGrid.Columns[$e.ColumnIndex].Name -ne 'Selected') { return }
     $row = $hostsGrid.Rows[$e.RowIndex]
     $name = [string]$row.Cells['Host'].Value
@@ -617,10 +622,10 @@ $calcReload.Add_Click({
     }catch{Fail $_.Exception.Message}
 })
 
-# Operations: report output in a read-only textbox, no blocking MessageBox for long reports
+# Operations: AdminMask-focused checks with explicit evidence limitations.
 $opsHead=New-Object Windows.Forms.Panel
 $opsHead.Dock='Top'
-$opsHead.Height=100
+$opsHead.Height=120
 $opsPage.Controls.Add($opsHead)
 $outputBox=New-Object Windows.Forms.TextBox
 $outputBox.Multiline=$true
@@ -630,27 +635,60 @@ $outputBox.WordWrap=$false
 $outputBox.Dock='Fill'
 $outputBox.Font=New-Object Drawing.Font('Consolas',9)
 $opsPage.Controls.Add($outputBox)
-Set-PageLayout -Page $opsPage -Header $opsHead -Body $outputBox -HeaderHeight 100
-$opsInfo=Make-Label $opsHead 'Read-only checks. Linked GPOs are not proof of effective application; RSoP requires remote access and rights.' 12 10 1050
-$opsAll=Make-Button $opsHead 'Check AD' 12 44 128
-$opsLinks=Make-Button $opsHead 'Linked GPOs' 150 44 128
-$opsRsop=Make-Button $opsHead 'RSoP (selected)' 289 44 148
-$opsPlan=Make-Button $opsHead 'Apply (plan only)' 448 44 158
-$opsOpen=Make-Button $opsHead 'Open config' 616 44 125
-$opsAll.Add_Click({Run-Check 'Inventory'})
-$opsLinks.Add_Click({Run-Check 'LinkedGpo'})
-$opsRsop.Add_Click({
-    $selectedComputer=Grid-Value $hostsGrid 'Host'
-    if (!$selectedComputer) {Fail 'Select a host in Hosts first.';return}
-    Run-Check 'Rsop' $selectedComputer
-})
-$opsPlan.Add_Click({
-    try{
-        $result=& (Join-Path $root 'scripts/adminMask_Run.ps1') -ProjectRoot $root 2>&1 | Out-String -Width 220
-        $outputBox.Text=[string]$result
+Set-PageLayout -Page $opsPage -Header $opsHead -Body $outputBox -HeaderHeight 120
+$opsInfo=Make-Label $opsHead 'Scope: checked hosts, otherwise all CSV hosts. GPO references/links do not guarantee effective application.' 12 10 1050
+$opsAudit=Make-Button $opsHead 'Check Mask + GPO' 12 44 176
+$opsRsop=Make-Button $opsHead 'Check + RSoP' 197 44 158
+$opsCheck=Make-Button $opsHead 'Check AD' 364 44 120
+$opsPlan=Make-Button $opsHead 'Apply (plan only)' 493 44 158
+$opsOpen=Make-Button $opsHead 'Open reports' 660 44 135
+$opsHint=Make-Label $opsHead 'GPO audit reads attribute references, linked GPOs and AD values. RSoP checks effective computer policy when accessible.' 12 86 1060
+
+function Invoke-AdminMaskAudit {
+    param([switch]$WithRsop)
+    try {
+        $names = @(Get-CheckedHostNames)
+        $scope = if ($names.Count -eq 0) { 'all hosts in CSV' } else { "$($names.Count) checked hosts" }
+        $outputBox.Text = "Checking $scope. This query may take time..."
+        $outputBox.Refresh()
+        $scriptPath = Join-Path $root 'scripts/AdminMask.GpoAudit.ps1'
+        $params = @{ProjectRoot=$root}
+        if ($names.Count -gt 0) { $params.ComputerName = [string[]]$names }
+        if ($WithRsop) { $params.IncludeRsop = $true }
+        $audit = & $scriptPath @params 2>&1 | Out-String -Width 240
+        $outputBox.Text = [string]$audit
+    }
+    catch {
+        $outputBox.Text = "Audit failed: $($_.Exception.Message)"
+        Fail $_.Exception.Message
+    }
+}
+$opsAudit.Add_Click({Invoke-AdminMaskAudit})
+$opsRsop.Add_Click({Invoke-AdminMaskAudit -WithRsop})
+$opsCheck.Add_Click({
+    try {
+        $checked = @(Get-CheckedHostNames)
+        if ($checked.Count -eq 1) {Run-Check 'Inventory' $checked[0]}
+        elseif ($checked.Count -eq 0) {Run-Check 'Inventory'}
+        else {
+            $lines = foreach ($computer in $checked) {
+                & (Join-Path $root 'scripts/adminMask_Check.ps1') -ProjectRoot $root -Mode Inventory -HostName $computer
+            }
+            $outputBox.Text = ($lines | Out-String -Width 220)
+        }
     }catch{Fail $_.Exception.Message}
 })
-$opsOpen.Add_Click({Start-Process explorer.exe -ArgumentList (Join-Path $root 'config')})
+$opsPlan.Add_Click({
+    try {
+        $result = & (Join-Path $root 'scripts/adminMask_Run.ps1') -ProjectRoot $root 2>&1 | Out-String -Width 220
+        $outputBox.Text = [string]$result
+    }catch{Fail $_.Exception.Message}
+})
+$opsOpen.Add_Click({
+    $directory=Join-Path $root 'reports'
+    if (-not (Test-Path -LiteralPath $directory)) {New-Item -Path $directory -ItemType Directory -Force | Out-Null}
+    Start-Process explorer.exe -ArgumentList $directory
+})
 
 $script:roles=@(Get-AdminMaskRoles -ProjectRoot $root)
 Refresh-Calculator
