@@ -100,10 +100,16 @@ function New-Grid([Windows.Forms.Control]$parent) {
 }
 function Set-Grid([Windows.Forms.DataGridView]$grid,[object[]]$rows,[string[]]$cols) {
     $dt=New-Object System.Data.DataTable
-    foreach($c in $cols){[void]$dt.Columns.Add($c,[string])}
+    foreach($c in $cols){
+        if ($c -eq 'Selected') { [void]$dt.Columns.Add($c,[bool]) }
+        else { [void]$dt.Columns.Add($c,[string]) }
+    }
     foreach($item in $rows) {
         $r=$dt.NewRow()
-        foreach($c in $cols){$r[$c]=[string]$item.$c}
+        foreach($c in $cols){
+            if ($c -eq 'Selected') {$r[$c]=[bool]$item.Selected}
+            else {$r[$c]=[string]$item.$c}
+        }
         $dt.Rows.Add($r)
     }
     $grid.DataSource=$dt
@@ -499,6 +505,7 @@ $calcPanel.Dock='Fill'
 $calcPanel.FlowDirection='TopDown'
 $calcPanel.WrapContents=$false
 $calcPanel.AutoScroll=$true
+$calcPanel.Padding = New-Object Windows.Forms.Padding(16,18,8,8)
 $calcPage.Controls.Add($calcPanel)
 Set-PageLayout -Page $calcPage -Header $calcHead -Body $calcPanel -HeaderHeight 124
 $calcTitle=Make-Label $calcHead 'Mask: 0' 12 12 230
@@ -543,9 +550,12 @@ function Refresh-Calculator {
         if($value -eq 0){continue}
         $c=New-Object Windows.Forms.CheckBox
         $c.Text="$($role.Name) ($value)"
+        $c.Font=New-Object Drawing.Font('Segoe UI',10)
         $c.Tag=$value
-        $c.Width=650
-        $c.Height=27
+        $c.Width=580
+        $c.Height=32
+        $c.Margin=New-Object Windows.Forms.Padding(0,1,0,1)
+        $c.AutoSize=$false
         $c.Add_CheckedChanged({Calc-Value})
         [void]$calcPanel.Controls.Add($c)
     }
