@@ -68,3 +68,11 @@ Or use `Start-AdminMask.cmd`. Example config files initialize only when local fi
 - The reconstructed version cannot validate the original intended role-to-GPO rules until those rules are supplied.
 - The OU discovery runs synchronously; large OUs may stall the GUI.
 - The WinForms GUI has not been executed/tested on Windows in this environment.
+
+## Mask data source clarification (2026-11-23)
+
+**Current mask source is `config/hosts.csv` only.** Mask Calculator is independent. OU discovery previously assigned a default `Maska=0` to every newly discovered host, even when its real policy state was unknown. Discovery now leaves `Maska` and `Tier` empty (unknown) for new rows, and preserves existing CSV rows unchanged. Previously imported `0` values are not automatically altered because some zeros could be intentional.
+
+`Use for host` now asks for confirmation before saving the calculated mask to the selected host in `hosts.csv`. This is a **CSV-only** change, not an AD / GPO write.
+
+To synchronize **existing AD/GPO masks**, the authoritative attribute, registry policy value, GPO name/pattern or other data source must be identified and implemented. Until then, the UI cannot claim to display effective masks applied to remote hosts. Do not bulk-replace existing CSV values with guessed values.
