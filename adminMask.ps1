@@ -3,296 +3,434 @@
 param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
-    throw 'Start with Windows PowerShell in STA mode.'
-}
+if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') { throw 'Launch Windows PowerShell in STA mode.' }
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-[System.Windows.Forms.Application]::EnableVisualStyles()
+[Windows.Forms.Application]::EnableVisualStyles()
 $root = $PSScriptRoot
 . (Join-Path $root 'scripts/AdminMask.Common.ps1')
 Initialize-AdminMaskConfig -ProjectRoot $root
+$script:hostRows = @()
+$script:roles = @()
+$script:ignoreFilters = $false
 
-$form = New-Object Windows.Forms.Form
-$form.Text = 'AdminMask - OU GUI'
-$form.StartPosition = 'CenterScreen'
-$form.Size = New-Object Drawing.Size(1050,720)
-$form.MinimumSize = New-Object Drawing.Size(880,600)
-$tabs = New-Object Windows.Forms.TabControl
-$tabs.Dock = 'Fill'
-$form.Controls.Add($tabs)
-
-function New-Page([string]$name) {
-    $page = New-Object Windows.Forms.TabPage
-    $page.Text = $name
-    $tabs.TabPages.Add($page) | Out-Null
-    return $page
+function Make-Button([Windows.Forms.Control]$parent,[string]$caption,[int]$x,[int]$y,[int]$w=125) {
+    $b=New-Object Windows.Forms.Button
+    $b.Text=$caption
+    $b.SetBounds($x,$y,$w,28)
+    $parent.Controls.Add($b)
+    return $b
 }
-function New-Button([Windows.Forms.Control]$parent,[string]$name,[int]$x,[int]$y,[int]$width=120) {
-    $button = New-Object Windows.Forms.Button
-    $button.Text = $name
-    $button.Location = New-Object Drawing.Point($x,$y)
-    $button.Size = New-Object Drawing.Size($width,29)
-    $button.Anchor = 'Top,Left'
-    $parent.Controls.Add($button)
-    return $button
+function Make-Label([Windows.Forms.Control]$parent,[string]$caption,[int]$x,[int]$y,[int]$w=70) {
+    $l=New-Object Windows.Forms.Label
+    $l.Text=$caption
+    $l.SetBounds($x,$y,$w,22)
+    $parent.Controls.Add($l)
+    return $l
 }
-function New-Label([Windows.Forms.Control]$parent,[string]$name,[int]$x,[int]$y,[int]$width=100) {
-    $label = New-Object Windows.Forms.Label
-    $label.Text = $name
-    $label.Location = New-Object Drawing.Point($x,$y)
-    $label.Size = New-Object Drawing.Size($width,22)
-    $parent.Controls.Add($label)
-    return $label
+function Make-Text([Windows.Forms.Control]$parent,[int]$x,[int]$y,[int]$w=160) {
+    $t=New-Object Windows.Forms.TextBox
+    $t.SetBounds($x,$y,$w,25)
+    $parent.Controls.Add($t)
+    return $t
 }
-function New-Textbox([Windows.Forms.Control]$parent,[int]$x,[int]$y,[int]$width=200) {
-    $input = New-Object Windows.Forms.TextBox
-    $input.Location = New-Object Drawing.Point($x,$y)
-    $input.Size = New-Object Drawing.Size($width,25)
-    $parent.Controls.Add($input)
-    return $input
+function Make-Combo([Windows.Forms.Control]$parent,[int]$x,[int]$y,[int]$w=130) {
+    $c=New-Object Windows.Forms.ComboBox
+    $c.DropDownStyle='DropDownList'
+    $c.IntegralHeight=$false
+    $c.DropDownHeight=260
+    $c.SetBounds($x,$y,$w,25)
+    $parent.Controls.Add($c)
+    return $c
 }
-function New-Combo([Windows.Forms.Control]$parent,[int]$x,[int]$y,[int]$width=125) {
-    $combo = New-Object Windows.Forms.ComboBox
-    $combo.Location = New-Object Drawing.Point($x,$y)
-    $combo.Size = New-Object Drawing.Size($width,26)
-    $combo.DropDownStyle = 'DropDownList'
-    $parent.Controls.Add($combo)
-    return $combo
-}
-function Show-Failure([string]$message) {
+function Fail([string]$message) {
     [Windows.Forms.MessageBox]::Show($message,'AdminMask',[Windows.Forms.MessageBoxButtons]::OK,[Windows.Forms.MessageBoxIcon]::Error) | Out-Null
 }
-function Confirm-Action([string]$message) {
-    return ([Windows.Forms.MessageBox]::Show($message,'AdminMask',[Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Question) -eq 'Yes')
+function Confirm([string]$message) {
+    return [Windows.Forms.MessageBox]::Show($message,'AdminMask','YesNo','Question') -eq 'Yes'
+}
+function Select-Combo([Windows.Forms.ComboBox]$combo,[string]$wanted,[string]$fallback='All') {
+    if ($combo.Items.Contains($wanted)) { $combo.SelectedItem=$wanted }
+    elseif ($combo.Items.Contains($fallback)) { $combo.SelectedItem=$fallback }
+    elseif ($combo.Items.Count -gt 0) { $combo.SelectedIndex=0 }
+}
+function Reset-Combo([Windows.Forms.ComboBox]$combo,[object[]]$items,[string]$fallback='All') {
+    $old=[string]$combo.SelectedItem
+    $combo.Items.Clear()
+    foreach ($i in $items) { [void]$combo.Items.Add([string]$i) }
+    Select-Combo $combo $old $fallback
 }
 function New-Grid([Windows.Forms.Control]$parent) {
-    $grid = New-Object Windows.Forms.DataGridView
-    $grid.Location = New-Object Drawing.Point(12,92)
-    $grid.Size = New-Object Drawing.Size(990,450)
-    $grid.Anchor = 'Top,Bottom,Left,Right'
-    $grid.ReadOnly = $true
-    $grid.MultiSelect = $false
-    $grid.SelectionMode = 'FullRowSelect'
-    $grid.AllowUserToAddRows = $false
-    $grid.AutoSizeColumnsMode = 'Fill'
-    $parent.Controls.Add($grid)
-    return $grid
+    $g=New-Object Windows.Forms.DataGridView
+    $g.Dock='Fill'
+    $g.ReadOnly=$true
+    $g.MultiSelect=$false
+    $g.SelectionMode='FullRowSelect'
+    $g.AllowUserToAddRows=$false
+    $g.AllowUserToDeleteRows=$false
+    $g.AutoSizeColumnsMode='Fill'
+    $g.RowHeadersVisible=$false
+    $g.BackgroundColor=[Drawing.Color]::White
+    $parent.Controls.Add($g)
+    return $g
 }
-function Set-GridData([Windows.Forms.DataGridView]$grid,[object[]]$rows,[string[]]$columns) {
-    $table = New-Object System.Data.DataTable
-    foreach ($c in $columns) { $null = $table.Columns.Add($c,[string]) }
-    foreach ($item in $rows) {
-        $record = $table.NewRow()
-        foreach ($c in $columns) { $record[$c] = [string]$item.$c }
-        $table.Rows.Add($record)
+function Set-Grid([Windows.Forms.DataGridView]$grid,[object[]]$rows,[string[]]$cols) {
+    $dt=New-Object System.Data.DataTable
+    foreach($c in $cols){[void]$dt.Columns.Add($c,[string])}
+    foreach($item in $rows) {
+        $r=$dt.NewRow()
+        foreach($c in $cols){$r[$c]=[string]$item.$c}
+        $dt.Rows.Add($r)
     }
-    $grid.DataSource = $table
+    $grid.DataSource=$dt
+    $grid.ClearSelection()
 }
-function Selected-GridValue([Windows.Forms.DataGridView]$grid,[string]$column) {
-    if ($grid.SelectedRows.Count -lt 1) { return '' }
+function Grid-Value([Windows.Forms.DataGridView]$grid,[string]$column) {
+    if ($grid.SelectedRows.Count -ne 1) { return '' }
     return [string]$grid.SelectedRows[0].Cells[$column].Value
 }
-function Invoke-External([string]$scriptPath,[string[]]$arguments) {
-    $psi = New-Object Diagnostics.ProcessStartInfo
-    $psi.FileName = "$PSHOME\powershell.exe"
-    $psi.Arguments = '-NoProfile -File "' + $scriptPath + '" ' + ($arguments -join ' ')
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.CreateNoWindow = $true
-    $process = [Diagnostics.Process]::Start($psi)
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
-    $msg = ($stdout + [Environment]::NewLine + $stderr).Trim()
-    if ($process.ExitCode -ne 0) { Show-Failure $msg } else {
-        [Windows.Forms.MessageBox]::Show($msg,'AdminMask') | Out-Null
-    }
+function Run-Check([string]$mode,[string]$hostName='') {
+    try {
+        $script=Join-Path $root 'scripts/adminMask_Check.ps1'
+        $output=@(& $script -ProjectRoot $root -Mode $mode -HostName $hostName 2>&1 | Out-String -Width 220)
+        if ($output.Count -eq 0 -or [string]::IsNullOrWhiteSpace($output[0])) { $output=@('No records found.') }
+        $outputBox.Text=($output -join [Environment]::NewLine)
+        $tabs.SelectedTab=$opsPage
+    } catch { Fail $_.Exception.Message }
 }
-$hostsPage = New-Page 'Hosts'
-$ouPage = New-Page 'AD OUs'
-$maskPage = New-Page 'Mask Calculator'
-$opsPage = New-Page 'Operations'
 
-New-Label $hostsPage 'Host' 12 16 45 | Out-Null
-$hostInput = New-Textbox $hostsPage 62 12 160
-New-Label $hostsPage 'Maska' 234 16 50 | Out-Null
-$maskCombo = New-Combo $hostsPage 290 12 115
-New-Label $hostsPage 'Tier' 416 16 34 | Out-Null
-$tierCombo = New-Combo $hostsPage 455 12 95
-foreach ($tier in @('0','1','2','3')) { $null = $tierCombo.Items.Add($tier) }
-$tierCombo.SelectedIndex = 0
-New-Label $hostsPage 'OU' 560 16 30 | Out-Null
-$ouCombo = New-Combo $hostsPage 593 12 375
-$addHost = New-Button $hostsPage 'Add / Update' 12 52 130
-$removeHost = New-Button $hostsPage 'Remove' 150 52 100
-$reloadHost = New-Button $hostsPage 'Reload' 257 52 100
-$hostGrid = New-Grid $hostsPage
-
-function Refresh-OuCombo {
-    $selected = [string]$ouCombo.Text
-    $ouCombo.Items.Clear()
-    $null = $ouCombo.Items.Add('')
-    foreach ($dn in (Get-AdminMaskOus -ProjectRoot $root)) { $null = $ouCombo.Items.Add($dn) }
-    if ($ouCombo.Items.Contains($selected)) { $ouCombo.SelectedItem = $selected } else { $ouCombo.SelectedIndex = 0 }
+$form=New-Object Windows.Forms.Form
+$form.Text='AdminMask - OU GUI'
+$form.StartPosition='CenterScreen'
+$form.ClientSize=New-Object Drawing.Size(1100,720)
+$form.MinimumSize=New-Object Drawing.Size(990,620)
+$form.AutoScroll=$false
+$form.KeyPreview=$false
+$tabs=New-Object Windows.Forms.TabControl
+$tabs.Dock='Fill'
+$form.Controls.Add($tabs)
+function New-Page([string]$caption) {
+    $p=New-Object Windows.Forms.TabPage
+    $p.Text=$caption
+    $p.AutoScroll=$false
+    [void]$tabs.TabPages.Add($p)
+    return $p
 }
+$hostsPage=New-Page 'Hosts'
+$ouPage=New-Page 'AD OUs'
+$calcPage=New-Page 'Mask Calculator'
+$opsPage=New-Page 'Operations'
+
+# Hosts: separate edit controls and filtering controls
+$hostHead=New-Object Windows.Forms.Panel
+$hostHead.Dock='Top'
+$hostHead.Height=139
+$hostsPage.Controls.Add($hostHead)
+$hostsGrid=New-Grid $hostsPage
+$hostsGrid.BringToFront()
+$hostHead.BringToFront()
+
+Make-Label $hostHead 'Host' 12 12 45 | Out-Null
+$hostName=Make-Text $hostHead 62 8 150
+Make-Label $hostHead 'Mask' 223 12 42 | Out-Null
+$editMask=Make-Combo $hostHead 267 8 140
+Make-Label $hostHead 'Tier' 418 12 35 | Out-Null
+$editTier=Make-Combo $hostHead 454 8 95
+Reset-Combo $editTier @('0','1','2') '2'
+Make-Label $hostHead 'OU' 561 12 30 | Out-Null
+$editOu=Make-Combo $hostHead 595 8 490
+$hostSave=Make-Button $hostHead 'Add / Update' 12 44 130
+$hostRemove=Make-Button $hostHead 'Remove' 150 44 105
+$hostReload=Make-Button $hostHead 'Reload' 263 44 105
+$hostCheck=Make-Button $hostHead 'Check selected AD' 376 44 155
+
+Make-Label $hostHead 'FILTERS' 12 100 62 | Out-Null
+Make-Label $hostHead 'Host' 78 100 38 | Out-Null
+$filterHost=Make-Text $hostHead 118 96 160
+Make-Label $hostHead 'Mask' 289 100 42 | Out-Null
+$filterMask=Make-Combo $hostHead 333 96 130
+Make-Label $hostHead 'Tier' 476 100 32 | Out-Null
+$filterTier=Make-Combo $hostHead 509 96 100
+Make-Label $hostHead 'OU' 619 100 24 | Out-Null
+$filterOu=Make-Combo $hostHead 647 96 330
+$resetFilters=Make-Button $hostHead 'Clear' 984 96 98
+
 function Refresh-Hosts {
-    Set-GridData $hostGrid (Get-AdminMaskHosts -ProjectRoot $root) @('Host','Maska','Tier','OU')
+    $script:hostRows=@(Get-AdminMaskHosts -ProjectRoot $root)
+    Refresh-HostFilters
 }
-function Refresh-Roles {
-    $maskCombo.Items.Clear()
-    $null = $maskCombo.Items.Add('0')
-    foreach ($role in (Get-AdminMaskRoles -ProjectRoot $root)) {
-        if (-not $maskCombo.Items.Contains([string]$role.Value)) { $null = $maskCombo.Items.Add([string]$role.Value) }
-    }
-    $maskCombo.SelectedIndex = 0
+function Apply-HostFilters {
+    if ($script:ignoreFilters) { return }
+    $pattern=$filterHost.Text.Trim()
+    $mask=[string]$filterMask.SelectedItem
+    $tier=[string]$filterTier.SelectedItem
+    $ou=[string]$filterOu.SelectedItem
+    $rows=@($script:hostRows | Where-Object {
+        (!$pattern -or $_.Host.IndexOf($pattern,[StringComparison]::OrdinalIgnoreCase) -ge 0) -and
+        (!$mask -or $mask -eq 'All' -or [string]$_.Maska -eq $mask) -and
+        (!$tier -or $tier -eq 'All' -or [string]$_.Tier -eq $tier) -and
+        (!$ou -or $ou -eq 'All' -or [string]$_.OU -eq $ou)
+    })
+    Set-Grid $hostsGrid $rows @('Host','Maska','Tier','OU')
+    $form.Text="AdminMask - OU GUI | Hosts: $($rows.Count) / $($script:hostRows.Count)"
 }
-$hostGrid.Add_SelectionChanged({
-    if ($hostGrid.SelectedRows.Count -ne 1) { return }
-    $hostInput.Text = Selected-GridValue $hostGrid 'Host'
-    foreach ($pair in @(@($maskCombo,'Maska'),@($tierCombo,'Tier'),@($ouCombo,'OU'))) {
-        $value = Selected-GridValue $hostGrid $pair[1]
-        if ($pair[0].Items.Contains($value)) { $pair[0].SelectedItem = $value }
-    }
-})
-$reloadHost.Add_Click({ Refresh-Hosts; Refresh-Roles; Refresh-OuCombo })
-$addHost.Add_Click({
+function Refresh-HostFilters {
+    $script:ignoreFilters=$true
     try {
-        $hostName = $hostInput.Text.Trim()
-        if ($hostName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,253}$') { throw 'Invalid hostname.' }
-        $mask = Test-AdminMaskValue -Value ([string]$maskCombo.Text) -Roles (Get-AdminMaskRoles -ProjectRoot $root)
-        $items = @(Get-AdminMaskHosts -ProjectRoot $root | Where-Object { $_.Host -ine $hostName })
-        $items += [pscustomobject]@{Host=$hostName;Maska=[string]$mask;Tier=[string]$tierCombo.Text;OU=[string]$ouCombo.Text}
-        Save-AdminMaskHosts -ProjectRoot $root -Items $items
-        Refresh-Hosts
-    } catch { Show-Failure $_.Exception.Message }
+        $maskValues=@('All') + @($script:hostRows | ForEach-Object { [string]$_.Maska } | Sort-Object -Unique)
+        $ouValues=@('All') + @(Get-AdminMaskOus -ProjectRoot $root) + @($script:hostRows | ForEach-Object { [string]$_.OU } | Where-Object { $_ } | Sort-Object -Unique)
+        Reset-Combo $filterMask @($maskValues | Select-Object -Unique)
+        Reset-Combo $filterTier @('All','0','1','2')
+        Reset-Combo $filterOu @($ouValues | Select-Object -Unique)
+    } finally { $script:ignoreFilters=$false }
+    Apply-HostFilters
+}
+function Refresh-Editor {
+    $mask=[string]$editMask.Text
+    $ou=[string]$editOu.Text
+    $allMasks=@(Get-AdminMaskMaskOptions -Roles $script:roles)
+    Reset-Combo $editMask $allMasks '0'
+    if ($mask) { Select-Combo $editMask $mask '0' }
+    Reset-Combo $editOu (@('All') + @(Get-AdminMaskOus -ProjectRoot $root)) 'All'
+    if ($ou) { Select-Combo $editOu $ou 'All' }
+}
+$filterHost.Add_TextChanged({Apply-HostFilters})
+$filterMask.Add_SelectedIndexChanged({Apply-HostFilters})
+$filterTier.Add_SelectedIndexChanged({Apply-HostFilters})
+$filterOu.Add_SelectedIndexChanged({Apply-HostFilters})
+$resetFilters.Add_Click({
+    $filterHost.Clear()
+    Select-Combo $filterMask 'All'
+    Select-Combo $filterTier 'All'
+    Select-Combo $filterOu 'All'
+    Apply-HostFilters
 })
-$removeHost.Add_Click({
+$hostReload.Add_Click({
     try {
-        $hostName = Selected-GridValue $hostGrid 'Host'
-        if (-not $hostName) { return }
-        if (-not (Confirm-Action "Remove host $hostName from CSV?")) { return }
-        $items = @(Get-AdminMaskHosts -ProjectRoot $root | Where-Object { $_.Host -ine $hostName })
-        Save-AdminMaskHosts -ProjectRoot $root -Items $items
+        $script:roles=@(Get-AdminMaskRoles -ProjectRoot $root)
+        Refresh-Editor
         Refresh-Hosts
-    } catch { Show-Failure $_.Exception.Message }
+        Refresh-Calculator
+    } catch { Fail $_.Exception.Message }
 })
-New-Label $ouPage 'OU distinguished name' 12 16 180 | Out-Null
-$ouInput = New-Textbox $ouPage 195 12 775
-$addOu = New-Button $ouPage 'Add / Update' 12 52 130
-$removeOu = New-Button $ouPage 'Remove' 150 52 100
-$discoverOu = New-Button $ouPage 'Discover recursive' 258 52 170
-$reloadOu = New-Button $ouPage 'Reload' 437 52 100
-$ouGrid = New-Grid $ouPage
+$hostsGrid.Add_CellClick({
+    if ($hostsGrid.SelectedRows.Count -ne 1) { return }
+    $hostName.Text=Grid-Value $hostsGrid 'Host'
+    Select-Combo $editMask (Grid-Value $hostsGrid 'Maska') '0'
+    Select-Combo $editTier (Grid-Value $hostsGrid 'Tier') '2'
+    Select-Combo $editOu (Grid-Value $hostsGrid 'OU') 'All'
+})
+$hostSave.Add_Click({
+    try {
+        $name=$hostName.Text.Trim()
+        if ($name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,253}$') { throw 'Invalid host name.' }
+        $mask=Test-AdminMaskValue -Value ([string]$editMask.SelectedItem) -Roles $script:roles
+        $tier=[string]$editTier.SelectedItem
+        if ($tier -notin @('0','1','2')) { throw 'Tier must be 0, 1 or 2.' }
+        $ou=[string]$editOu.SelectedItem
+        if ($ou -eq 'All') { $ou='' }
+        $rows=@(Get-AdminMaskHosts -ProjectRoot $root | Where-Object {$_.Host -ine $name})
+        $rows+= [pscustomobject]@{Host=$name;Maska=[string]$mask;Tier=$tier;OU=$ou}
+        Save-AdminMaskHosts -ProjectRoot $root -Items $rows
+        Refresh-Hosts
+    } catch { Fail $_.Exception.Message }
+})
+$hostRemove.Add_Click({
+    try {
+        $name=Grid-Value $hostsGrid 'Host'
+        if (-not $name -or -not (Confirm "Remove $name from CSV?")) { return }
+        $rows=@(Get-AdminMaskHosts -ProjectRoot $root | Where-Object {$_.Host -ine $name})
+        Save-AdminMaskHosts -ProjectRoot $root -Items $rows
+        Refresh-Hosts
+    } catch { Fail $_.Exception.Message }
+})
+$hostCheck.Add_Click({
+    $name=Grid-Value $hostsGrid 'Host'
+    if ($name) { Run-Check 'Inventory' $name }
+    else { Fail 'Select a host first.' }
+})
+
+# OU management
+$ouHead=New-Object Windows.Forms.Panel
+$ouHead.Dock='Top'
+$ouHead.Height=95
+$ouPage.Controls.Add($ouHead)
+$ouGrid=New-Grid $ouPage
+$ouGrid.BringToFront()
+$ouHead.BringToFront()
+Make-Label $ouHead 'OU DN' 12 14 65 | Out-Null
+$ouInput=Make-Text $ouHead 80 10 905
+$ouAdd=Make-Button $ouHead 'Add / Update' 12 49 130
+$ouRemove=Make-Button $ouHead 'Remove' 150 49 110
+$ouDiscover=Make-Button $ouHead 'Discover recursive' 268 49 168
+$ouReload=Make-Button $ouHead 'Reload' 444 49 110
 function Refresh-Ous {
-    $rows = @(Get-AdminMaskOus -ProjectRoot $root | ForEach-Object { [pscustomobject]@{OU = $_} })
-    Set-GridData $ouGrid $rows @('OU')
-    Refresh-OuCombo
+    $rows=@(Get-AdminMaskOus -ProjectRoot $root | ForEach-Object {[pscustomobject]@{OU=$_}})
+    Set-Grid $ouGrid $rows @('OU')
+    Refresh-Editor
+    Refresh-HostFilters
 }
-$ouGrid.Add_SelectionChanged({
-    $ouInput.Text = Selected-GridValue $ouGrid 'OU'
-})
-$reloadOu.Add_Click({Refresh-Ous})
-$addOu.Add_Click({
+$ouGrid.Add_CellClick({$ouInput.Text=Grid-Value $ouGrid 'OU'})
+$ouReload.Add_Click({try{Refresh-Ous}catch{Fail $_.Exception.Message}})
+$ouAdd.Add_Click({
     try {
-        $dn = $ouInput.Text.Trim()
+        $dn=$ouInput.Text.Trim()
         Test-AdminMaskDn $dn
-        $old = Selected-GridValue $ouGrid 'OU'
-        $items = @(Get-AdminMaskOus -ProjectRoot $root | Where-Object { $_ -ine $old -or -not $old })
-        $items += $dn
+        $old=Grid-Value $ouGrid 'OU'
+        $items=@(Get-AdminMaskOus -ProjectRoot $root | Where-Object {(!$old) -or ($_ -ine $old)})
+        $items+= $dn
         Save-AdminMaskOus -ProjectRoot $root -Items $items
         Refresh-Ous
-    } catch { Show-Failure $_.Exception.Message }
+    } catch {Fail $_.Exception.Message}
 })
-$removeOu.Add_Click({
+$ouRemove.Add_Click({
     try {
-        $dn = Selected-GridValue $ouGrid 'OU'
-        if (-not $dn -or -not (Confirm-Action "Remove OU from configuration?`n$dn")) { return }
-        $items = @(Get-AdminMaskOus -ProjectRoot $root | Where-Object { $_ -ine $dn })
+        $dn=Grid-Value $ouGrid 'OU'
+        if (!$dn -or !(Confirm "Remove OU from config? $dn")) {return}
+        $items=@(Get-AdminMaskOus -ProjectRoot $root | Where-Object {$_ -ine $dn})
         Save-AdminMaskOus -ProjectRoot $root -Items $items
         Refresh-Ous
-    } catch { Show-Failure $_.Exception.Message }
+    } catch {Fail $_.Exception.Message}
 })
-$discoverOu.Add_Click({
+$ouDiscover.Add_Click({
     try {
-        $dn = $ouInput.Text.Trim()
+        $dn=$ouInput.Text.Trim()
         Test-AdminMaskDn $dn
-        $raw = & (Join-Path $root 'scripts/AdminMask-Inventory.ps1') -SearchBase @($dn) -Recursive
-        $known = @(Get-AdminMaskHosts -ProjectRoot $root)
-        $added = 0
-        foreach ($computer in $raw) {
-            if (@($known | Where-Object { $_.Host -ieq $computer.Host }).Count -gt 0) { continue }
-            $known += [pscustomobject]@{Host=$computer.Host;Maska='0';Tier='2';OU=$dn}
-            $added++
+        $found=@(& (Join-Path $root 'scripts/AdminMask-Inventory.ps1') -SearchBase @($dn) -Recursive)
+        $items=@(Get-AdminMaskHosts -ProjectRoot $root)
+        $known=@{}
+        foreach($h in $items){$known[[string]$h.Host]=$true}
+        $added=0
+        foreach($h in $found){
+            if (!$known.ContainsKey([string]$h.Host)){
+                $items+= [pscustomobject]@{Host=$h.Host;Maska='0';Tier='2';OU=$dn}
+                $known[[string]$h.Host]=$true
+                $added++
+            }
         }
-        if ($added -gt 0 -and (Confirm-Action "Import $added new hosts? Existing records remain unchanged.")) {
-            Save-AdminMaskHosts -ProjectRoot $root -Items $known
+        if($added -gt 0 -and (Confirm "Import $added new hosts? Existing rows are preserved.")){
+            Save-AdminMaskHosts -ProjectRoot $root -Items $items
             Refresh-Hosts
         }
-        [Windows.Forms.MessageBox]::Show("Discovered $(@($raw).Count), new $added.") | Out-Null
-    } catch { Show-Failure $_.Exception.Message }
+        [Windows.Forms.MessageBox]::Show("Discovered $($found.Count) computers; new: $added.",'AdminMask')|Out-Null
+    }catch{Fail $_.Exception.Message}
 })
 
-$maskValue = New-Label $maskPage 'Mask: 0' 12 15 320
-$maskValue.Font = New-Object Drawing.Font('Segoe UI',14,[Drawing.FontStyle]::Bold)
-$rolePanel = New-Object Windows.Forms.FlowLayoutPanel
-$rolePanel.Location = New-Object Drawing.Point(12,55)
-$rolePanel.Size = New-Object Drawing.Size(970,410)
-$rolePanel.Anchor = 'Top,Bottom,Left,Right'
-$rolePanel.FlowDirection = 'TopDown'
-$rolePanel.WrapContents = $false
-$rolePanel.AutoScroll = $true
-$maskPage.Controls.Add($rolePanel)
-function Update-Calculator {
-    $value = 0
-    foreach ($c in $rolePanel.Controls) {
-        if ($c -is [Windows.Forms.CheckBox] -and $c.Checked) { $value = $value -bor [int]$c.Tag }
+# Calculator + role additions
+$calcHead=New-Object Windows.Forms.Panel
+$calcHead.Dock='Top'
+$calcHead.Height=114
+$calcPage.Controls.Add($calcHead)
+$calcPanel=New-Object Windows.Forms.FlowLayoutPanel
+$calcPanel.Dock='Fill'
+$calcPanel.FlowDirection='TopDown'
+$calcPanel.WrapContents=$false
+$calcPanel.AutoScroll=$true
+$calcPage.Controls.Add($calcPanel)
+$calcPanel.BringToFront()
+$calcHead.BringToFront()
+$calcTitle=Make-Label $calcHead 'Mask: 0' 12 12 230
+$calcTitle.Font=New-Object Drawing.Font('Segoe UI',13,[Drawing.FontStyle]::Bold)
+$calcCopy=Make-Button $calcHead 'Copy mask' 235 8 120
+$calcUse=Make-Button $calcHead 'Use for host' 362 8 130
+Make-Label $calcHead 'New role' 12 69 75 | Out-Null
+$newRoleName=Make-Text $calcHead 86 65 180
+Make-Label $calcHead 'Bit' 275 69 32 | Out-Null
+$newRoleBit=Make-Text $calcHead 310 65 90
+$calcAdd=Make-Button $calcHead 'Add role' 410 64 115
+$calcReload=Make-Button $calcHead 'Reload roles' 531 64 125
+function Calc-Value {
+    $value=0
+    foreach($control in $calcPanel.Controls){
+        if($control -is [Windows.Forms.CheckBox] -and $control.Checked){$value=$value -bor [int]$control.Tag}
     }
-    $maskValue.Text = "Mask: $value"
+    $calcTitle.Text="Mask: $value"
 }
 function Refresh-Calculator {
-    $rolePanel.Controls.Clear()
-    foreach ($role in (Get-AdminMaskRoles -ProjectRoot $root)) {
-        $value = [int]$role.Value
-        if ($value -eq 0) { continue }
-        $c = New-Object Windows.Forms.CheckBox
-        $c.Text = "$($role.Name) ($value)"
-        $c.Tag = $value
-        $c.Width = 400
-        $c.Add_CheckedChanged({Update-Calculator})
-        $rolePanel.Controls.Add($c)
+    $calcPanel.Controls.Clear()
+    foreach($role in $script:roles) {
+        $value=[int]$role.Value
+        if($value -eq 0){continue}
+        $c=New-Object Windows.Forms.CheckBox
+        $c.Text="$($role.Name) ($value)"
+        $c.Tag=$value
+        $c.Width=650
+        $c.Height=27
+        $c.Add_CheckedChanged({Calc-Value})
+        [void]$calcPanel.Controls.Add($c)
     }
-    Update-Calculator
+    Calc-Value
 }
-$copyMask = New-Button $maskPage 'Copy mask' 12 480 120
-$copyMask.Anchor = 'Bottom,Left'
-$copyMask.Add_Click({
-    [Windows.Forms.Clipboard]::SetText(($maskValue.Text -replace '^Mask: ',''))
+$calcCopy.Add_Click({
+    try{[Windows.Forms.Clipboard]::SetText($calcTitle.Text.Replace('Mask: ',''))}
+    catch{Fail $_.Exception.Message}
+})
+$calcUse.Add_Click({
+    $v=$calcTitle.Text.Replace('Mask: ','')
+    Select-Combo $editMask $v '0'
+    $tabs.SelectedTab=$hostsPage
+})
+$calcAdd.Add_Click({
+    try {
+        $name=$newRoleName.Text.Trim()
+        $bit=0
+        if (-not [int]::TryParse($newRoleBit.Text.Trim(),[ref]$bit)) { throw 'Bit must be an integer.' }
+        $items=@($script:roles)+@([pscustomobject]@{Name=$name;Value=$bit})
+        Save-AdminMaskRoles -ProjectRoot $root -Items $items
+        $script:roles=@(Get-AdminMaskRoles -ProjectRoot $root)
+        Refresh-Calculator
+        Refresh-Editor
+        $newRoleName.Clear()
+        $newRoleBit.Clear()
+    }catch{Fail $_.Exception.Message}
+})
+$calcReload.Add_Click({
+    try{
+        $script:roles=@(Get-AdminMaskRoles -ProjectRoot $root)
+        Refresh-Calculator
+        Refresh-Editor
+    }catch{Fail $_.Exception.Message}
 })
 
-$opsText = New-Object Windows.Forms.TextBox
-$opsText.Location = New-Object Drawing.Point(12,16)
-$opsText.Size = New-Object Drawing.Size(950,110)
-$opsText.Multiline = $true
-$opsText.ReadOnly = $true
-$opsText.Text = "AD discovery and check are read-only.
-Apply generates a validation report only; no AD changes are performed.
-Effective GPO check and AD write mapping require original implementation details."
-$opsText.Anchor = 'Top,Left,Right'
-$opsPage.Controls.Add($opsText)
-$checkBtn = New-Button $opsPage 'Check AD' 12 145 150
-$applyBtn = New-Button $opsPage 'Apply (plan only)' 175 145 175
-$folderBtn = New-Button $opsPage 'Open config folder' 363 145 165
-$checkBtn.Add_Click({
-    try { Invoke-External (Join-Path $root 'scripts/adminMask_Check.ps1') @() } catch { Show-Failure $_.Exception.Message }
+# Operations: report output in a read-only textbox, no blocking MessageBox for long reports
+$opsHead=New-Object Windows.Forms.Panel
+$opsHead.Dock='Top'
+$opsHead.Height=100
+$opsPage.Controls.Add($opsHead)
+$outputBox=New-Object Windows.Forms.TextBox
+$outputBox.Multiline=$true
+$outputBox.ReadOnly=$true
+$outputBox.ScrollBars='Both'
+$outputBox.WordWrap=$false
+$outputBox.Dock='Fill'
+$outputBox.Font=New-Object Drawing.Font('Consolas',9)
+$opsPage.Controls.Add($outputBox)
+$outputBox.BringToFront()
+$opsHead.BringToFront()
+$opsInfo=Make-Label $opsHead 'Read-only checks. Linked GPOs are not proof of effective application; RSoP requires remote access and rights.' 12 10 1050
+$opsAll=Make-Button $opsHead 'Check AD' 12 44 128
+$opsLinks=Make-Button $opsHead 'Linked GPOs' 150 44 128
+$opsRsop=Make-Button $opsHead 'RSoP (selected)' 289 44 148
+$opsPlan=Make-Button $opsHead 'Apply (plan only)' 448 44 158
+$opsOpen=Make-Button $opsHead 'Open config' 616 44 125
+$opsAll.Add_Click({Run-Check 'Inventory'})
+$opsLinks.Add_Click({Run-Check 'LinkedGpo'})
+$opsRsop.Add_Click({
+    $host=Grid-Value $hostsGrid 'Host'
+    if (!$host) {Fail 'Select a host in Hosts first.';return}
+    Run-Check 'Rsop' $host
 })
-$applyBtn.Add_Click({
-    try { Invoke-External (Join-Path $root 'scripts/adminMask_Run.ps1') @() } catch { Show-Failure $_.Exception.Message }
+$opsPlan.Add_Click({
+    try{
+        $result=& (Join-Path $root 'scripts/adminMask_Run.ps1') -ProjectRoot $root 2>&1 | Out-String -Width 220
+        $outputBox.Text=[string]$result
+    }catch{Fail $_.Exception.Message}
 })
-$folderBtn.Add_Click({ Start-Process explorer.exe (Join-Path $root 'config') })
-Refresh-Roles
+$opsOpen.Add_Click({Start-Process explorer.exe -ArgumentList (Join-Path $root 'config')})
+
+$script:roles=@(Get-AdminMaskRoles -ProjectRoot $root)
+Refresh-Calculator
+Refresh-Editor
 Refresh-Ous
 Refresh-Hosts
-Refresh-Calculator
 [void]$form.ShowDialog()
