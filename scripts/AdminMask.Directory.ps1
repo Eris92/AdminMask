@@ -114,3 +114,46 @@ function Get-AdminMaskDirectoryComputers {
         }
     }
 }
+
+function Get-AdminMaskAllDirectoryComputers {
+    param([Parameter(Mandatory)][string]$ProjectRoot)
+    $mappings = @(Get-AdminMaskOuMappings -ProjectRoot $ProjectRoot)
+    if ($mappings.Count -eq 0) { throw 'No configured OUs.' }
+    $roots = @()
+    foreach ($mapping in ($mappings | Sort-Object { ([string]$_.OU).Length })) {
+        $dn = ([string]$mapping.OU).Trim()
+        if (-not $dn) { continue }
+        $covered = $false
+        foreach ($rootDn in $roots) {
+            if ($dn.Equals($rootDn,[StringComparison]::OrdinalIgnoreCase) -or
+                $dn.EndsWith(','+$rootDn,[StringComparison]::OrdinalIgnoreCase)) {
+                $covered = $true
+                break
+            }
+        }
+        if (-not $covered) { $roots += $dn }
+    }
+    $seen = @{}
+    foreach ($rootDn in $roots) {
+        foreach ($record in (Get-AdminMaskDirectoryComputers -SearchBase $rootDn -ProjectRoot $ProjectRoot -Recursive)) {
+            $dn = [string]$record.DistinguishedName
+            if ($seen.ContainsKey($dn)) { continue }
+            $seen[$dn] = $true
+            # Prefer the longest matching configured OU (nested Tier OUs win).
+            $best = $null
+            foreach ($mapping in $mappings) {
+                $mappedDn = ([string]$mapping.OU).Trim()
+                if ($dn.EndsWith(','+$mappedDn,[StringComparison]::OrdinalIgnoreCase)) {
+                    if ($null -eq $best -or $mappedDn.Length -gt ([string]$best.OU).Length) {
+                        $best = $mapping
+                    }
+                }
+            }
+            if ($null -ne $best) {
+                $record.OU = [string]$best.OU
+                $record.Tier = [string]$best.Tier
+            }
+            $record
+        }
+    }
+}
