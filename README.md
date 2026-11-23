@@ -52,3 +52,19 @@ Or use `Start-AdminMask.cmd`. Example config files initialize only when local fi
 2. Add effective GPO verification.
 3. Add asynchronous OU discovery with progress and cancellation.
 4. Add Pester tests and signed EXE packaging.
+
+## Changes (2026-11-23)
+
+- Hosts view includes independently applied host text, Mask, Tier and OU filters. Each filter has an `All` option (host text can be blank); filters survive Reload.
+- Host editor supports Tier `0`, `1`, `2`, OU `All` (stored as blank), and all valid role-mask combinations.
+- Mask Calculator supports adding a custom single-bit role to `config/roles.csv`, then using the result for a host. Existing roles are backed up before changes.
+- `Check AD` checks computer object inventory; `Linked GPOs` enumerates OU linked/inherited GPOs and **does not** establish application.
+- `RSoP (selected)` attempts to retrieve the effective policies for the selected computer and writes an HTML report to the current user's temporary directory. Requires RSAT GroupPolicy module, remote access, and permissions.
+- `Apply (plan only)` validates local masks but **does not change AD or GPO**.
+- Fixed script ProjectRoot default: calculated within the script body instead of within the parameter initializer.
+
+### Remaining limitations
+
+- The reconstructed version cannot validate the original intended role-to-GPO rules until those rules are supplied.
+- The OU discovery runs synchronously; large OUs may stall the GUI.
+- The WinForms GUI has not been executed/tested on Windows in this environment.
