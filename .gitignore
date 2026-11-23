@@ -1,0 +1,15 @@
+# Runtime and environment data
+logs/
+backups/
+reports/
+*.log
+*.tmp
+*.bak
+*.exe
+*.pdb
+*.user
+config/hosts.csv
+config/roles.csv
+config/ad-ous.txt
+config/settings.json
+.DS_Store
