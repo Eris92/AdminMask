@@ -76,3 +76,15 @@ Or use `Start-AdminMask.cmd`. Example config files initialize only when local fi
 `Use for host` now asks for confirmation before saving the calculated mask to the selected host in `hosts.csv`. This is a **CSV-only** change, not an AD / GPO write.
 
 To synchronize **existing AD/GPO masks**, the authoritative attribute, registry policy value, GPO name/pattern or other data source must be identified and implemented. Until then, the UI cannot claim to display effective masks applied to remote hosts. Do not bulk-replace existing CSV values with guessed values.
+
+## AD authoritative mask and OU Tier mapping (2026-11-23)
+
+- `AD OUs`: choose `Tier = 0 / 1 / 2` (or Unassigned) when adding/updating each OU. Configuration is stored in local, gitignored `config/ou-tiers.csv`. Legacy `config/ad-ous.txt` entries are read automatically if no OU mapping CSV exists; they initially have Unassigned Tier.
+- `AD OUs -> Mask attribute`: enter the **actual LDAP attribute name** containing an integer mask on computer objects, e.g. a custom schema attribute chosen by your organization. There is **no assumed default**. Saved in `config/settings.json`; template `config/settings.example.json`. Only read access to AD is used.
+- `Discover recursive`: reads mask from the configured AD attribute, resolves Tier from the longest matching configured OU DN, and imports new computers without overwriting existing local inventory.
+- `Hosts -> Sync from AD`: reads all configured OU trees and, after explicit confirmation, updates local host CSV with authoritative nonempty AD mask and mapped Tier; backs up CSV before writing. AD remains unchanged.
+- If the AD attribute is not configured, no mask is inferred; discovered hosts have an empty (unknown) mask, never a fabricated zero. Blank AD values do not wipe an existing local mask.
+- Previously imported zero masks remain until you run an explicit sync with the proper attribute configured.
+- AD attribute values must be nonnegative base-10 integers; multivalued/non-numeric attributes are rejected.
+
+**Limit:** no AD attribute name has been provided or independently verified; configure the real attribute before asserting mask accuracy. Tier is an OU mapping, not an AD computer attribute. No AD writes are implemented.
