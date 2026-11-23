@@ -70,6 +70,49 @@ function Test-AdminMaskValue {
     if (($number -band (-bnot $allowed)) -ne 0) { throw "Unknown role bits in mask: $Value" }
     return $number
 }
+function Save-AdminMaskRoles {
+    param([Parameter(Mandatory)][string]$ProjectRoot,[Parameter(Mandatory)][object[]]$Items)
+    $values = @{}
+    $names = @{}
+    foreach ($item in $Items) {
+        $name = ([string]$item.Name).Trim()
+        $value = 0
+        if ($name -notmatch '^[A-Za-z][A-Za-z0-9_-]{0,39}
+    param([string]$Dn)
+    if ($Dn -notmatch '^(OU|CN)=.+,DC=.+') { throw "Invalid OU distinguished name: $Dn" }
+}
+ -or -not [int]::TryParse([string]$item.Value,[ref]$value)) {
+            throw 'Invalid role name or value.'
+        }
+        if ($value -lt 0 -or ($value -ne 0 -and (($value -band ($value - 1)) -ne 0))) {
+            throw 'Role value must be zero or a single power of two.'
+        }
+        if ($names.ContainsKey($name.ToLowerInvariant()) -or ($value -ne 0 -and $values.ContainsKey($value))) {
+            throw "Duplicate role name or bit: $name"
+        }
+        $names[$name.ToLowerInvariant()] = $true
+        if ($value -ne 0) { $values[$value] = $true }
+    }
+    Backup-AdminMaskConfig -ProjectRoot $ProjectRoot -Name 'roles.csv'
+    $path = Join-Path (Join-Path $ProjectRoot 'config') 'roles.csv'
+    $records = @($Items | ForEach-Object {
+        [pscustomobject]@{Name = [string]$_.Name; Value = [int]$_.Value}
+    })
+    if ($records.Count -eq 0) { throw 'Cannot save empty roles.' }
+    $csv = ($records | ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine
+    [System.IO.File]::WriteAllText($path,$csv + [Environment]::NewLine,(New-Object System.Text.UTF8Encoding($false)))
+}
+function Get-AdminMaskMaskOptions {
+    param([object[]]$Roles)
+    $values = @(0)
+    foreach ($role in $Roles) {
+        $bit = [int]$role.Value
+        if ($bit -le 0) { continue }
+        if ($values.Count -gt 4096) { throw 'Too many role combinations for dropdown.' }
+        $values = @($values + @($values | ForEach-Object { $_ -bor $bit }) | Sort-Object -Unique)
+    }
+    return @($values | Sort-Object)
+}
 function Test-AdminMaskDn {
     param([string]$Dn)
     if ($Dn -notmatch '^(OU|CN)=.+,DC=.+') { throw "Invalid OU distinguished name: $Dn" }
