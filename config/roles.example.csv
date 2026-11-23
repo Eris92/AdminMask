@@ -1,0 +1,9 @@
+Name,Value
+Default,0
+L1,1
+Dev,2
+BI,4
+Sec,8
+TST,16
+FK,32
+CRM,64
