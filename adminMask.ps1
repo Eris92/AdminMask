@@ -377,28 +377,34 @@ $ouRemove.Add_Click({
         Refresh-Ous
     } catch {Fail $_.Exception.Message}
 })
+$ouDiscover.Text='Discover all OUs'
 $ouDiscover.Add_Click({
     try {
-        $dn=$ouInput.Text.Trim()
-        Test-AdminMaskDn $dn
-        $found=@(Get-AdminMaskDirectoryComputers -SearchBase $dn -ProjectRoot $root -Recursive)
-        $items=@(Get-AdminMaskHosts -ProjectRoot $root)
-        $known=@{}
-        foreach($h in $items){$known[[string]$h.Host]=$true}
-        $added=0
-        foreach($h in $found){
-            if (!$known.ContainsKey([string]$h.Host)){
-                $items+= [pscustomobject]@{Host=$h.Host;Maska=[string]$h.Maska;Tier=[string]$h.Tier;OU=$dn}
-                $known[[string]$h.Host]=$true
+        $found = @(Get-AdminMaskAllDirectoryComputers -ProjectRoot $root)
+        $items = @(Get-AdminMaskHosts -ProjectRoot $root)
+        $known = @{}
+        foreach ($entry in $items) { $known[[string]$entry.Host] = $true }
+        $added = 0
+        foreach ($entry in $found) {
+            if (-not $known.ContainsKey([string]$entry.Host)) {
+                $items += [pscustomobject]@{
+                    Host = [string]$entry.Host
+                    Maska = [string]$entry.Maska
+                    Tier = [string]$entry.Tier
+                    OU = [string]$entry.OU
+                }
+                $known[[string]$entry.Host] = $true
                 $added++
             }
         }
-        if($added -gt 0 -and (Confirm "Import $added new hosts? Existing rows are preserved.")){
-            Save-AdminMaskHosts -ProjectRoot $root -Items $items
-            Refresh-Hosts
+        if ($added -gt 0) {
+            if (Confirm "Discovered $($found.Count) unique computers in all configured OUs. Import $added new hosts? Existing CSV records will not be overwritten.") {
+                Save-AdminMaskHosts -ProjectRoot $root -Items $items
+                Refresh-Hosts
+            }
         }
-        [Windows.Forms.MessageBox]::Show("Discovered $($found.Count) computers; new: $added.",'AdminMask')|Out-Null
-    }catch{Fail $_.Exception.Message}
+        [Windows.Forms.MessageBox]::Show("Unique AD computers: $($found.Count). New hosts: $added. Existing hosts preserved.",'AdminMask') | Out-Null
+    } catch { Fail $_.Exception.Message }
 })
 
 # Calculator + role additions
