@@ -15,6 +15,8 @@ $script:hostRows = @()
 $script:roles = @()
 $script:ignoreFilters = $false
 $script:selectedComputer = ''
+$script:checkedHosts = @{}
+$script:filterEmptyLabel = '[Empty]'
 
 function Make-Button([Windows.Forms.Control]$parent,[string]$caption,[int]$x,[int]$y,[int]$w=125) {
     $b=New-Object Windows.Forms.Button
@@ -91,6 +93,7 @@ function New-Grid([Windows.Forms.Control]$parent) {
     $g.AllowUserToDeleteRows=$false
     $g.AutoSizeColumnsMode='Fill'
     $g.RowHeadersVisible=$false
+    $g.MultiSelect=$true
     $g.BackgroundColor=[Drawing.Color]::White
     $parent.Controls.Add($g)
     return $g
@@ -106,9 +109,39 @@ function Set-Grid([Windows.Forms.DataGridView]$grid,[object[]]$rows,[string[]]$c
     $grid.DataSource=$dt
     $grid.ClearSelection()
 }
+function Format-AdminMaskRoles {
+    param([string]$Mask,[object[]]$Roles)
+    if ([string]::IsNullOrWhiteSpace($Mask)) { return '[Not configured]' }
+    $number = 0
+    if (-not [int]::TryParse($Mask,[ref]$number) -or $number -lt 0) { return '[Invalid mask]' }
+    if ($number -eq 0) { return 'Default' }
+    $labels = New-Object System.Collections.Generic.List[string]
+    $covered = 0
+    foreach ($role in $Roles) {
+        $bit = [int]$role.Value
+        if ($bit -le 0) { continue }
+        if (($number -band $bit) -eq $bit) {
+            $labels.Add([string]$role.Name)
+            $covered = $covered -bor $bit
+        }
+    }
+    if (($number -band (-bnot $covered)) -ne 0) {
+        $labels.Add(('[Unknown bits: {0}]' -f ($number -band (-bnot $covered))))
+    }
+    return ($labels -join ', ')
+}
 function Grid-Value([Windows.Forms.DataGridView]$grid,[string]$column) {
-    if ($grid.SelectedRows.Count -ne 1) { return '' }
-    return [string]$grid.SelectedRows[0].Cells[$column].Value
+    if ($grid.SelectedRows.Count -eq 1) {
+        return [string]$grid.SelectedRows[0].Cells[$column].Value
+    }
+    if (-not [string]::IsNullOrWhiteSpace($script:selectedComputer)) {
+        foreach ($row in $grid.Rows) {
+            if ([string]$row.Cells['Host'].Value -eq $script:selectedComputer) {
+                return [string]$row.Cells[$column].Value
+            }
+        }
+    }
+    return ''
 }
 function Run-Check([string]$mode,[string]$hostName='') {
     try {
@@ -175,6 +208,7 @@ Make-Label $hostHead 'Tier' 476 100 32 | Out-Null
 $filterTier=Make-Combo $hostHead 509 96 100
 Make-Label $hostHead 'OU' 619 100 24 | Out-Null
 $filterOu=Make-Combo $hostHead 647 96 330
+$hostSelectedLabel=Make-Label $hostHead 'Selected: 0' 705 49 260
 $resetFilters=Make-Button $hostHead 'Clear' 984 96 98
 
 function Refresh-Hosts {
@@ -224,6 +258,12 @@ function Sync-HostsFromAD {
     Refresh-Hosts
     [Windows.Forms.MessageBox]::Show("AD read completed. New: $newCount; changes: $changed.",'AdminMask')|Out-Null
 }
+function Get-CheckedHostNames {
+    return @($script:checkedHosts.Keys | Where-Object { $script:checkedHosts[$_] })
+}
+function Refresh-HostCheckCount {
+    $hostSelectedLabel.Text = 'Selected: ' + @(Get-CheckedHostNames).Count
+}
 function Apply-HostFilters {
     if ($script:ignoreFilters) { return }
     $pattern=$filterHost.Text.Trim()
@@ -232,21 +272,44 @@ function Apply-HostFilters {
     $ou=[string]$filterOu.SelectedItem
     $rows=@($script:hostRows | Where-Object {
         (!$pattern -or $_.Host.IndexOf($pattern,[StringComparison]::OrdinalIgnoreCase) -ge 0) -and
-        (!$mask -or $mask -eq 'All' -or [string]$_.Maska -eq $mask) -and
-        (!$tier -or $tier -eq 'All' -or [string]$_.Tier -eq $tier) -and
+        ($mask -eq 'All' -or ($mask -eq $script:filterEmptyLabel -and [string]::IsNullOrWhiteSpace([string]$_.Maska)) -or ($mask -ne $script:filterEmptyLabel -and [string]$_.Maska -eq $mask)) -and
+        ($tier -eq 'All' -or ($tier -eq $script:filterEmptyLabel -and [string]::IsNullOrWhiteSpace([string]$_.Tier)) -or ($tier -ne $script:filterEmptyLabel -and [string]$_.Tier -eq $tier)) -and
         (!$ou -or $ou -eq 'All' -or [string]$_.OU -eq $ou)
     })
-    Set-Grid $hostsGrid $rows @('Host','Maska','Tier','OU')
+    $display = @($rows | ForEach-Object {
+        [pscustomobject]@{
+            Selected = [bool]$script:checkedHosts[[string]$_.Host]
+            Host = [string]$_.Host
+            Maska = [string]$_.Maska
+            Roles = Format-AdminMaskRoles -Mask ([string]$_.Maska) -Roles $script:roles
+            Tier = [string]$_.Tier
+            OU = [string]$_.OU
+        }
+    })
+    Set-Grid $hostsGrid $display @('Selected','Host','Maska','Roles','Tier','OU')
+    if ($hostsGrid.Columns['Selected'] -is [Windows.Forms.DataGridViewTextBoxColumn]) {
+        $position = $hostsGrid.Columns['Selected'].Index
+        $hostsGrid.Columns.RemoveAt($position)
+        $checkColumn = New-Object Windows.Forms.DataGridViewCheckBoxColumn
+        $checkColumn.Name = 'Selected'
+        $checkColumn.DataPropertyName = 'Selected'
+        $hostsGrid.Columns.Insert($position,$checkColumn)
+    }
+    $hostsGrid.Columns['Selected'].ReadOnly = $false
+    $hostsGrid.Columns['Selected'].Width = 70
+    $hostsGrid.Columns['Selected'].AutoSizeMode = 'None'
+    $hostsGrid.Columns['Selected'].HeaderText = 'Select'
+    Refresh-HostCheckCount
     $script:selectedComputer = ''
     $form.Text="AdminMask - OU GUI | Hosts: $($rows.Count) / $($script:hostRows.Count)"
 }
 function Refresh-HostFilters {
     $script:ignoreFilters=$true
     try {
-        $maskValues=@('All') + @($script:hostRows | ForEach-Object { [string]$_.Maska } | Sort-Object -Unique)
+        $maskValues=@('All',$script:filterEmptyLabel) + @($script:hostRows | ForEach-Object { [string]$_.Maska } | Where-Object { $_ -ne '' } | Sort-Object -Unique)
         $ouValues=@('All') + @(Get-AdminMaskOuMappings -ProjectRoot $root | ForEach-Object {$_.OU}) + @($script:hostRows | ForEach-Object { [string]$_.OU } | Where-Object { $_ } | Sort-Object -Unique)
         Reset-Combo $filterMask @($maskValues | Select-Object -Unique)
-        Reset-Combo $filterTier @('All','0','1','2')
+        Reset-Combo $filterTier @('All',$script:filterEmptyLabel,'0','1','2')
         Reset-Combo $filterOu @($ouValues | Select-Object -Unique)
     } finally { $script:ignoreFilters=$false }
     Apply-HostFilters
@@ -279,13 +342,32 @@ $hostReload.Add_Click({
         Refresh-Calculator
     } catch { Fail $_.Exception.Message }
 })
+$hostsGrid.Add_CurrentCellDirtyStateChanged({
+    if ($hostsGrid.IsCurrentCellDirty -and $hostsGrid.CurrentCell.OwningColumn.Name -eq 'Selected') {
+        $hostsGrid.CommitEdit([Windows.Forms.DataGridViewDataErrorContexts]::Commit) | Out-Null
+    }
+})
+$hostsGrid.Add_CellValueChanged({
+    param($sender,$e)
+    if ($e.RowIndex -lt 0 -or $e.ColumnIndex -lt 0) { return }
+    if ($hostsGrid.Columns[$e.ColumnIndex].Name -ne 'Selected') { return }
+    $row = $hostsGrid.Rows[$e.RowIndex]
+    $name = [string]$row.Cells['Host'].Value
+    if ($name) {
+        $script:checkedHosts[$name] = [bool]$row.Cells['Selected'].Value
+        Refresh-HostCheckCount
+    }
+})
 $hostsGrid.Add_CellClick({
-    if ($hostsGrid.SelectedRows.Count -ne 1) { return }
-    $hostName.Text=Grid-Value $hostsGrid 'Host'
+    param($sender,$e)
+    if ($e.RowIndex -lt 0 -or $e.ColumnIndex -lt 0) { return }
+    if ($hostsGrid.Columns[$e.ColumnIndex].Name -eq 'Selected') { return }
+    $hostsGrid.Rows[$e.RowIndex].Selected = $true
+    $hostName.Text=[string]$hostsGrid.Rows[$e.RowIndex].Cells['Host'].Value
     $script:selectedComputer = $hostName.Text
-    Select-Combo $editMask (Grid-Value $hostsGrid 'Maska') '0'
-    Select-Combo $editTier (Grid-Value $hostsGrid 'Tier') '2'
-    Select-Combo $editOu (Grid-Value $hostsGrid 'OU') 'All'
+    Select-Combo $editMask ([string]$hostsGrid.Rows[$e.RowIndex].Cells['Maska'].Value) '0'
+    Select-Combo $editTier ([string]$hostsGrid.Rows[$e.RowIndex].Cells['Tier'].Value) '2'
+    Select-Combo $editOu ([string]$hostsGrid.Rows[$e.RowIndex].Cells['OU'].Value) 'All'
 })
 $hostSave.Add_Click({
     try {
