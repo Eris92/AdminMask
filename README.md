@@ -94,3 +94,16 @@ To synchronize **existing AD/GPO masks**, the authoritative attribute, registry 
 Historical AdminMask source context identifies AD computer attribute `investaAdminMask` as the bitmask source and also references `investaAdminGroups`. The default for `MaskAttribute` is now `investaAdminMask` (configurable). `investaAdminGroups` is **not** modified by this implementation. Set Tier per OU in the GUI; no default OU-to-Tier mapping was recovered.
 
 After setting Tier per OU, use **Hosts > Sync from AD** to read current masks and update the local CSV on confirmation. This does not write AD.
+
+## UI and policy audit update (2026-11-23)
+
+- **Hosts > Mask filter**: `All` shows all values, `[Empty]` shows only hosts without an assigned mask. An actual mask `0` remains distinct from an empty field.
+- **Hosts > Tier filter**: `All`, `[Empty]`, `0`, `1`, `2`.
+- **Hosts > Select**: editable checkbox in the first column. Selections persist across filtering/reload and are used as scope for Operations. With no checked rows, Operations audits all hosts in CSV.
+- **Hosts > Roles**: translates the numeric mask using the configured role bits; e.g. `63` maps to `L1, Dev, BI, Sec, TST, FK`. Unknown bits and missing masks are explicitly marked.
+- **Mask Calculator**: stabilized checkbox layout and spacing.
+- **Operations > Check Mask + GPO**: read-only audit. Compares each computer's CSV mask with AD `investaAdminMask`, scans accessible GPO XML for `investaAdminMask` and `investaAdminGroups` references and counts enabled GPO links with references. Writes a CSV report under `reports/`.
+- **Operations > Check + RSoP**: additionally attempts HTML RSoP reports per checked computer (or all if none checked). May be slow and requires remote access and appropriate permissions.
+- **Operations > Check AD**: read-only AD object checks. `Apply` remains plan-only until original write semantics have been validated.
+
+**Evidence limits:** A GPO containing an attribute name or being linked to an OU does **not** prove that the mask is implemented by that GPO or that the client applied it. A meaningful compliance result requires the original policy mapping and effective-side checks; report statuses intentionally distinguish AD data comparison, GPO references and RSoP results. This change does not write to AD or modify GPOs.
