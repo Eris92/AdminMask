@@ -88,3 +88,9 @@ To synchronize **existing AD/GPO masks**, the authoritative attribute, registry 
 - AD attribute values must be nonnegative base-10 integers; multivalued/non-numeric attributes are rejected.
 
 **Limit:** no AD attribute name has been provided or independently verified; configure the real attribute before asserting mask accuracy. Tier is an OU mapping, not an AD computer attribute. No AD writes are implemented.
+
+## Confirmed original AD fields
+
+Historical AdminMask source context identifies AD computer attribute `investaAdminMask` as the bitmask source and also references `investaAdminGroups`. The default for `MaskAttribute` is now `investaAdminMask` (configurable). `investaAdminGroups` is **not** modified by this implementation. Set Tier per OU in the GUI; no default OU-to-Tier mapping was recovered.
+
+After setting Tier per OU, use **Hosts > Sync from AD** to read current masks and update the local CSV on confirmation. This does not write AD.
