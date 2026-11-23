@@ -1,0 +1,2 @@
+# Add one OU distinguished name per line
+# OU=Workstations,DC=example,DC=local
